@@ -1,0 +1,104 @@
+{
+  "name": "PageEnsemble — Rappels automatiques (quotidien)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * *" }] }
+      },
+      "name": "Cron 9h quotidien",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Réservations qui arrivent à J-3\nSELECT\n  r.id,\n  r.date_fin_prevue,\n  r.montant_caution,\n  r.montant_location,\n  e.nom_complet  AS emprunteur_nom,\n  e.phone        AS emprunteur_phone,\n  p.nom_complet  AS proprietaire_nom,\n  p.phone        AS proprietaire_phone,\n  b.titre        AS livre_titre,\n  b.auteur       AS livre_auteur\nFROM reservations r\nJOIN profiles e ON e.id = r.emprunteur_id\nJOIN books    b ON b.id = r.book_id\nJOIN profiles p ON p.id = b.proprietaire_id\nWHERE r.statut = 'Actif'\n  AND DATE(r.date_fin_prevue) = CURRENT_DATE + INTERVAL '3 days';",
+        "additionalFields": {}
+      },
+      "name": "Supabase — J-3 rappels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [460, 200],
+      "credentials": { "postgres": { "id": "SUPABASE_DB_CREDENTIAL_ID", "name": "Supabase PageEnsemble DB" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Réservations en retard (date passée, toujours Actif)\nSELECT\n  r.id,\n  r.date_fin_prevue,\n  r.montant_caution,\n  e.nom_complet  AS emprunteur_nom,\n  e.phone        AS emprunteur_phone,\n  p.nom_complet  AS proprietaire_nom,\n  p.phone        AS proprietaire_phone,\n  b.titre        AS livre_titre,\n  b.auteur       AS livre_auteur\nFROM reservations r\nJOIN profiles e ON e.id = r.emprunteur_id\nJOIN books    b ON b.id = r.book_id\nJOIN profiles p ON p.id = b.proprietaire_id\nWHERE r.statut = 'Actif'\n  AND r.date_fin_prevue < NOW();",
+        "additionalFields": {}
+      },
+      "name": "Supabase — Retards",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [460, 420],
+      "credentials": { "postgres": { "id": "SUPABASE_DB_CREDENTIAL_ID", "name": "Supabase PageEnsemble DB" } }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop rappels J-3",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 200]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop retards",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 420]
+    },
+    {
+      "parameters": {
+        "authentication": "credentials",
+        "from": "+1XXXXXXXXXX",
+        "to": "={{ $json.emprunteur_phone }}",
+        "message": "=⏰ PageEnsemble — Rappel : Le livre \"{{ $json.livre_titre }}\" est à retourner dans 3 jours ({{ new Date($json.date_fin_prevue).toLocaleDateString('fr-FR') }}). Merci !"
+      },
+      "name": "SMS rappel J-3",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [900, 200],
+      "credentials": { "twilioApi": { "id": "TWILIO_CREDENTIAL_ID", "name": "Twilio account" } }
+    },
+    {
+      "parameters": {
+        "authentication": "credentials",
+        "from": "+1XXXXXXXXXX",
+        "to": "={{ $json.emprunteur_phone }}",
+        "message": "=🚨 PageEnsemble — RETARD : Le livre \"{{ $json.livre_titre }}\" devait être retourné le {{ new Date($json.date_fin_prevue).toLocaleDateString('fr-FR') }}. Contactez {{ $json.proprietaire_nom }} au plus vite."
+      },
+      "name": "SMS retard emprunteur",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [900, 380],
+      "credentials": { "twilioApi": { "id": "TWILIO_CREDENTIAL_ID", "name": "Twilio account" } }
+    },
+    {
+      "parameters": {
+        "authentication": "credentials",
+        "from": "+1XXXXXXXXXX",
+        "to": "={{ $json.proprietaire_phone }}",
+        "message": "=🚨 PageEnsemble — RETARD : {{ $json.emprunteur_nom }} n'a pas encore retourné \"{{ $json.livre_titre }}\" (dû le {{ new Date($json.date_fin_prevue).toLocaleDateString('fr-FR') }}). Contactez-le au {{ $json.emprunteur_phone }}."
+      },
+      "name": "SMS retard propriétaire",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [900, 480],
+      "credentials": { "twilioApi": { "id": "TWILIO_CREDENTIAL_ID", "name": "Twilio account" } }
+    }
+  ],
+  "connections": {
+    "Cron 9h quotidien":     { "main": [[{ "node": "Supabase — J-3 rappels", "type": "main", "index": 0 }, { "node": "Supabase — Retards", "type": "main", "index": 0 }]] },
+    "Supabase — J-3 rappels":{ "main": [[{ "node": "Loop rappels J-3", "type": "main", "index": 0 }]] },
+    "Supabase — Retards":    { "main": [[{ "node": "Loop retards", "type": "main", "index": 0 }]] },
+    "Loop rappels J-3":      { "main": [[{ "node": "SMS rappel J-3", "type": "main", "index": 0 }]] },
+    "Loop retards":          { "main": [[{ "node": "SMS retard emprunteur", "type": "main", "index": 0 }, { "node": "SMS retard propriétaire", "type": "main", "index": 0 }]] }
+  }
+}

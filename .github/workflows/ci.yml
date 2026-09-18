@@ -1,0 +1,175 @@
+name: CI / CD — PageEnsemble
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ── 1. Qualité ──────────────────────────────────────────────────────────────
+  quality:
+    name: TypeScript + Build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Nécessaire pour les tags de version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Générer numéro de version
+        id: version
+        run: |
+          VERSION="$(date +%Y%m%d)-${GITHUB_SHA::7}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "VITE_APP_VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Build production
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL:            ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY:       ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_STORAGE_BUCKET: books_images
+          VITE_N8N_WEBHOOK_SECRET:      ${{ secrets.VITE_N8N_WEBHOOK_SECRET }}
+          VITE_SENTRY_DSN:              ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_APP_VERSION:             ${{ steps.version.outputs.version }}
+          SENTRY_AUTH_TOKEN:            ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG:                   ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT:               ${{ secrets.SENTRY_PROJECT }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ steps.version.outputs.version }}
+          path: dist/
+          retention-days: 30   # Garder 30 jours pour rollback manuel
+
+  # ── 2. Audit sécurité dépendances ──────────────────────────────────────────
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: quality
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Audit dépendances (high + critical seulement)
+        run: npm audit --audit-level=high
+        continue-on-error: true   # Avertissement, pas bloquant
+
+  # ── 3. Déploiement (seulement sur main) ────────────────────────────────────
+  deploy:
+    name: Deploy → Vercel Production
+    runs-on: ubuntu-latest
+    needs: [quality, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Télécharger le build
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.quality.outputs.version }}
+          path: dist/
+
+      - name: Deploy sur Vercel
+        id: deploy
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token:   ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id:  ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args:    '--prod'
+          working-directory: .
+
+      - name: Tag la release Git
+        run: |
+          git config user.name  "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag -a "release/${{ needs.quality.outputs.version }}" \
+            -m "Deploy ${{ needs.quality.outputs.version }}"
+          git push origin "release/${{ needs.quality.outputs.version }}"
+
+      - name: Créer une release Sentry
+        run: |
+          npx @sentry/cli releases new "${{ needs.quality.outputs.version }}"
+          npx @sentry/cli releases set-commits \
+            "${{ needs.quality.outputs.version }}" --auto
+          npx @sentry/cli releases finalize \
+            "${{ needs.quality.outputs.version }}"
+          npx @sentry/cli releases deploys \
+            "${{ needs.quality.outputs.version }}" new -e production
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG:        ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT:    ${{ secrets.SENTRY_PROJECT }}
+        continue-on-error: true
+
+  # ── 4. Rollback automatique si Sentry détecte une régression ───────────────
+  # (déclenché manuellement ou par webhook Sentry)
+  rollback:
+    name: Rollback Manuel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment:
+      name: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lister les releases disponibles
+        run: |
+          echo "=== Tags de release disponibles ==="
+          git tag --list "release/*" | sort -r | head -10
+
+      - name: Rollback vers la release précédente
+        run: |
+          # Trouver la release précédente (avant la dernière)
+          PREV_TAG=$(git tag --list "release/*" | sort -r | sed -n '2p')
+          echo "Rollback vers: $PREV_TAG"
+          git checkout "$PREV_TAG"
+          echo "ROLLBACK_VERSION=$PREV_TAG" >> $GITHUB_ENV
+
+      - name: Redéployer la version précédente
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token:   ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id:  ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args:    '--prod'
+
+      - name: Notifier Sentry du rollback
+        run: |
+          npx @sentry/cli releases deploys \
+            "$ROLLBACK_VERSION" new -e production
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG:        ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT:    ${{ secrets.SENTRY_PROJECT }}
+        continue-on-error: true

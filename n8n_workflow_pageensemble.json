@@ -1,0 +1,119 @@
+{
+  "name": "PageEnsemble — Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pageensemble-notifications",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.type }}",
+              "operation": "contains",
+              "value2": "reservation"
+            }
+          ]
+        }
+      },
+      "name": "Switch Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construction du message selon le type\nconst { type, emprunteur, proprietaire, livre, reservation } = $input.first().json;\n\nconst dateRetour = new Date(reservation.date_fin_prevue).toLocaleDateString('fr-FR');\nconst dateDebut  = new Date(reservation.date_debut).toLocaleDateString('fr-FR');\n\nconst messages = {\n  reservation_confirmee: {\n    emprunteur: `📚 Bonjour ${emprunteur.nom} ! Votre réservation du livre \"${livre.titre}\" a bien été enregistrée. Elle est en attente de validation par ${proprietaire.nom}. Date limite de retour : ${dateRetour}.`,\n    proprietaire: `🔔 Nouvelle réservation ! ${emprunteur.nom} souhaite emprunter \"${livre.titre}\" à partir du ${dateDebut}. Connectez-vous sur PageEnsemble pour accepter ou refuser.`\n  },\n  reservation_acceptee: {\n    emprunteur: `✅ Bonne nouvelle ${emprunteur.nom} ! Votre réservation de \"${livre.titre}\" a été acceptée. Vous avez jusqu'au ${dateRetour} pour le retourner. Caution : ${reservation.montant_caution} FCFA. Contactez ${proprietaire.nom} pour récupérer le livre.`,\n    proprietaire: null\n  },\n  reservation_annulee: {\n    emprunteur: `❌ Bonjour ${emprunteur.nom}, votre réservation de \"${livre.titre}\" a été annulée. Vous pouvez réserver un autre livre sur PageEnsemble.`,\n    proprietaire: null\n  },\n  rappel_retour: {\n    emprunteur: `⏰ Rappel : Le livre \"${livre.titre}\" emprunté chez ${proprietaire.nom} est à retourner dans 3 jours (avant le ${dateRetour}). Merci de le préparer !`,\n    proprietaire: null\n  },\n  livre_en_retard: {\n    emprunteur: `🚨 RETARD : Le livre \"${livre.titre}\" devait être retourné le ${dateRetour}. Veuillez contacter ${proprietaire.nom} dès que possible pour organiser le retour.`,\n    proprietaire: `🚨 Le livre \"${livre.titre}\" prêté à ${emprunteur.nom} est en retard depuis le ${dateRetour}. Contactez-le au ${emprunteur.phone}.`\n  },\n  livre_retourne: {\n    emprunteur: `✅ Retour enregistré ! Merci ${emprunteur.nom} d'avoir rendu \"${livre.titre}\". Votre caution de ${reservation.montant_caution} FCFA vous sera remboursée par ${proprietaire.nom}.`,\n    proprietaire: `📬 ${emprunteur.nom} a retourné \"${livre.titre}\". Pensez à rembourser la caution de ${reservation.montant_caution} FCFA.`\n  }\n};\n\nconst msg = messages[type] || { emprunteur: null, proprietaire: null };\n\nreturn [{\n  json: {\n    type,\n    sms_emprunteur:    msg.emprunteur   ? { to: emprunteur.phone,    body: msg.emprunteur   } : null,\n    sms_proprietaire:  msg.proprietaire ? { to: proprietaire.phone,  body: msg.proprietaire } : null,\n    email_emprunteur:  emprunteur.email && msg.emprunteur   ? { to: emprunteur.email,   subject: `PageEnsemble — ${livre.titre}`, body: msg.emprunteur }   : null,\n    email_proprietaire: proprietaire.email && msg.proprietaire ? { to: proprietaire.email, subject: `PageEnsemble — ${livre.titre}`, body: msg.proprietaire } : null,\n  }\n}];"
+      },
+      "name": "Préparer Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.sms_emprunteur }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "name": "SMS emprunteur ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.sms_proprietaire }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "name": "SMS propriétaire ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "credentials",
+        "from": "+1XXXXXXXXXX",
+        "to": "={{ $json.sms_emprunteur.to }}",
+        "message": "={{ $json.sms_emprunteur.body }}"
+      },
+      "name": "Twilio SMS emprunteur",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1120, 140],
+      "credentials": { "twilioApi": { "id": "TWILIO_CREDENTIAL_ID", "name": "Twilio account" } }
+    },
+    {
+      "parameters": {
+        "authentication": "credentials",
+        "from": "+1XXXXXXXXXX",
+        "to": "={{ $json.sms_proprietaire.to }}",
+        "message": "={{ $json.sms_proprietaire.body }}"
+      },
+      "name": "Twilio SMS propriétaire",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1120, 340],
+      "credentials": { "twilioApi": { "id": "TWILIO_CREDENTIAL_ID", "name": "Twilio account" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"type\": \"{{ $('Préparer Messages').item.json.type }}\" }"
+      },
+      "name": "Réponse 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 300]
+    }
+  ],
+  "connections": {
+    "Webhook":             { "main": [[{ "node": "Préparer Messages", "type": "main", "index": 0 }]] },
+    "Préparer Messages":   { "main": [[{ "node": "SMS emprunteur ?", "type": "main", "index": 0 }, { "node": "SMS propriétaire ?", "type": "main", "index": 0 }]] },
+    "SMS emprunteur ?":    { "main": [[{ "node": "Twilio SMS emprunteur", "type": "main", "index": 0 }], [{ "node": "Réponse 200", "type": "main", "index": 0 }]] },
+    "SMS propriétaire ?":  { "main": [[{ "node": "Twilio SMS propriétaire", "type": "main", "index": 0 }], [{ "node": "Réponse 200", "type": "main", "index": 0 }]] },
+    "Twilio SMS emprunteur":   { "main": [[{ "node": "Réponse 200", "type": "main", "index": 0 }]] },
+    "Twilio SMS propriétaire": { "main": [[{ "node": "Réponse 200", "type": "main", "index": 0 }]] }
+  }
+}
