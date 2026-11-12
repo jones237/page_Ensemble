@@ -1,0 +1,44 @@
+# ─── Logs ───────────────────────────────────────────────────
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Dépendances ─────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ─── Build ───────────────────────────────────────────────────
+dist/
+dist-ssr/
+build/
+
+# ─── ENVIRONNEMENT — NE JAMAIS COMMITTER ────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production          # ← AJOUTÉ : était manquant
+.env.production.local
+.env.staging
+
+# ─── Éditeurs ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+
+# ─── Tests ───────────────────────────────────────────────────
+coverage/
+
+# ─── Divers ──────────────────────────────────────────────────
+*.local
+.vercel
+.netlify
