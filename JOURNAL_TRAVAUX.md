@@ -182,3 +182,10 @@ Source : critique /design-critique (lecture du code, pas de rendu navigateur). R
 `safeUrl.ts` + `MyReservationsPage` + `PDFReader` (liens https), `useGroups` (code de groupe généré par le serveur), `useDigitalBooks` (`onConflict`), `errors.ts` (inscription), `vercel.json` (CSP sans `unsafe-inline`/`unsafe-eval`), `index.html` + `public/assets/boot-diagnostic.v1.js` (script inline déplacé), `n8n_workflow_pageensemble.json` (authentification + garde-fous), `SECURITY_CHECKLIST.md`.
 - Contrôle : `npm install` + `tsc --noEmit` → 0 erreur ; `npm run build` ✓ ; `dist/index.html` sans script inline ; aucun `eval` dans le bundle. `package-lock.json` généré : à committer.
 - ⚠️ À tester sur une prévisualisation Vercel : connexion, catalogue public, lecture d'un PDF (CSP stricte), lien « mot de passe oublié ».
+
+### 2026-11-13 — Outil temporaire : changer le mot de passe d'un membre sans email (IA: Claude)
+Demandé par le propriétaire en attendant de régler l'envoi d'emails (SMTP/localhost). Objectif atteint sans ouvrir de faille :
+- **Fonction Edge `admin-reset-password`** (déployée en ligne) : exige un jeton de session valide (`verify_jwt=true`), revérifie dans la base, avec la clé `service_role` (jamais envoyée au navigateur), que l'appelant a `role = 'administrateur'`. Cherche le compte cible par email, règle son mot de passe (8 car., 1 majuscule, 1 chiffre), journalise qui/quand/pour qui dans `admin_password_resets` (table RLS : lecture par l'admin concerné seulement, écriture via service_role uniquement).
+- **Front** : `pages/admin/SettingsPage.tsx`, nouveau bloc ambre « Changer le mot de passe d'un membre (temporaire) », visible seulement si `profile.role === 'administrateur'` (contrôle serveur redondant, donc sans risque même si ce contrôle front était contourné).
+- Un membre normal ne peut pas appeler cette fonction avec succès : son rôle n'est pas administrateur, la fonction répond 403 avant toute modification.
+- À RETIRER dès que l'email fonctionne : supprimer le bloc ambre de `SettingsPage.tsx`, et éventuellement désactiver/supprimer la fonction Edge `admin-reset-password` dans Supabase (Edge Functions).
